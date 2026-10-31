@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Sewa Setu assistant: two MCP servers (citizen, officer) over streamable HTTP.
 
@@ -53,6 +53,11 @@ def db():
 def fmt(v):
     return v.isoformat(sep=" ", timespec="minutes") if isinstance(v, datetime) else (
         v.isoformat() if hasattr(v, "isoformat") else v)
+
+
+def _canon_block(b):
+    m = {x.lower(): x for x in portal.BLOCKS}
+    return m.get((b or '').strip().lower(), b)
 
 
 def who(ctx: Context):
@@ -158,7 +163,7 @@ def apply_for_pension(ctx: Context, applicant_name: str, dob: str, gender: str,
 
     data = {"applicant_name": applicant_name, "dob": dob, "gender": gender_v or "",
             "marital_status": marital_v or "", "husband_name": husband_name,
-            "village": village, "block": block, "bank_account": bank_account, "ifsc": ifsc}
+            "village": village, "block": _canon_block(block), "bank_account": bank_account, "ifsc": ifsc}
     rule_errors, cleaned = portal.validate_application(data, doc_path)
     errors += [e for e in rule_errors if e not in errors]
     if errors:
@@ -489,3 +494,4 @@ app = Starlette(
     ],
     lifespan=lifespan,
 )
+
