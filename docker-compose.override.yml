@@ -9,8 +9,29 @@ services:
     environment:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
       ASSISTANT_BASE_URL: ${ASSISTANT_BASE_URL:-http://localhost:8001}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me-before-deploying}
     depends_on:
       - db
       - smsgw
     volumes:
       - uploads:/var/sewasetu/uploads
+
+  # One public address in front of both services (Phase C).
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-http://:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - app
+      - assistant
+    restart: unless-stopped
+
+volumes:
+  caddy_data:

@@ -1,0 +1,9 @@
+# SITE_ADDRESS=http://:80            -> behind ngrok (ngrok adds the HTTPS)
+# SITE_ADDRESS=yourname.duckdns.org  -> Caddy gets its own HTTPS certificate (Oracle VM)
+{$SITE_ADDRESS:http://:80} {
+	@assistant path /citizen/* /officer/* /eval-dashboard /eval-dashboard.json /healthz /.well-known/oauth-protected-resource/*
+	reverse_proxy @assistant assistant:8001 {
+		flush_interval -1
+	}
+	reverse_proxy app:8000
+}

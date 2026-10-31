@@ -12,10 +12,12 @@ import re
 import base64
 import binascii
 import contextlib
+import html
+import json
 from datetime import datetime, timedelta
 
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, HTMLResponse
 from starlette.routing import Mount, Route
 from mcp.server.fastmcp import FastMCP, Context
 
@@ -361,6 +363,108 @@ async def healthz(request):
     return JSONResponse({"ok": True})
 
 
+
+# =========================================================================
+# Eval dashboard: what the scripted personas did and what the database showed afterwards
+# =========================================================================
+def _e(v):
+    return html.escape(str(v))
+
+
+def _persona_card(row):
+    pid, status, meta, steps, checks, started, ms, run_id = row
+    colour = {"PASS": "#1a7f37", "FAIL": "#cf222e", "SKIPPED": "#9a6700"}.get(status, "#555")
+    s_html = []
+    for s in steps:
+        if s.get("kind") == "say":
+            s_html.append("<li class='say'><b>%s:</b> &ldquo;%s&rdquo;</li>" % (_e(s["who"]), _e(s["text"])))
+        else:
+            s_html.append("<li class='tool'><code>%s/%s(%s)</code><br>&rarr; <code>%s</code></li>" % (
+                _e(s.get("role", "")), _e(s["tool"]), _e(json.dumps(s.get("args", {}), ensure_ascii=False)[:300]),
+                _e(s.get("result", ""))))
+    c_html = []
+    for c in checks:
+        c_html.append("<li class='%s'>%s %s%s</li>" % (
+            "ok" if c["ok"] else "bad", "&#10003;" if c["ok"] else "&#10007;", _e(c["name"]),
+            "" if c["ok"] else " <small>(%s)</small>" % _e(c.get("detail", ""))))
+    return ("<section><h2>%s &middot; %s <span class='pill' style='background:%s'>%s</span></h2>"
+            "<p class='meta'>%s, age %s, %s &middot; <i>%s</i></p>"
+            "<p><b>Goal:</b> %s<br><b>Must be true in the database:</b> %s</p>"
+            "<details><summary>Conversation and tool calls (%d steps)</summary><ol>%s</ol></details>"
+            "<h3>Checks against the real database / files</h3><ul class='checks'>%s</ul>"
+            "<p class='meta'>run %s &middot; %s &middot; %s ms</p></section>") % (
+        _e(pid), _e(meta["name"]), colour, status, _e(meta["name"]), _e(meta["age"]), _e(meta["village"]),
+        _e(meta["style"]), _e(meta["goal"]), _e(meta["expect"]), len(steps), "".join(s_html),
+        "".join(c_html), _e(run_id), _e(fmt(started)), ms)
+
+
+def _eval_data():
+    with db() as (conn, cur):
+        cur.execute("SELECT DISTINCT ON (persona_id) persona_id, status, persona, steps, checks, "
+                    "started_at, duration_ms, run_id FROM eval_results "
+                    "ORDER BY persona_id, (status = 'SKIPPED') ASC, id DESC")
+        rows = cur.fetchall()
+        cur.execute("SELECT run_id, min(started_at), "
+                    "count(*) FILTER (WHERE status = 'PASS'), "
+                    "count(*) FILTER (WHERE status IN ('PASS','FAIL')) "
+                    "FROM eval_results GROUP BY run_id ORDER BY 2 DESC LIMIT 10")
+        runs = cur.fetchall()
+    return rows, runs
+
+
+async def eval_dashboard(request):
+    try:
+        rows, runs = _eval_data()
+    except Exception:
+        rows, runs = [], []
+    real = [r for r in rows if r[1] in ("PASS", "FAIL")]
+    passed = sum(1 for r in real if r[1] == "PASS")
+    checks_total = sum(len(r[4]) for r in real)
+    checks_ok = sum(1 for r in real for c in r[4] if c["ok"])
+    findings = ""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "findings.md"),
+                  encoding="utf-8") as fh:
+            findings = fh.read()
+    except OSError:
+        pass
+    head = ("<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>Sewa Setu assistant: evals</title><style>"
+            "body{font-family:system-ui,sans-serif;max-width:920px;margin:24px auto;padding:0 14px;color:#1f2328;line-height:1.45}"
+            "section{border:1px solid #d0d7de;border-radius:8px;padding:12px 16px;margin:14px 0}"
+            "h1{margin-bottom:4px}h2{font-size:1.1rem;margin:0 0 4px}h3{font-size:.95rem;margin:10px 0 4px}"
+            ".pill{color:#fff;border-radius:10px;padding:1px 9px;font-size:.8rem;margin-left:6px}"
+            ".meta{color:#57606a;font-size:.85rem;margin:2px 0}.say{color:#0550ae}.ok{color:#1a7f37}.bad{color:#cf222e;font-weight:600}"
+            "code{font-size:.78rem;word-break:break-all}ul.checks{list-style:none;padding-left:4px}"
+            "pre{white-space:pre-wrap;background:#f6f8fa;padding:10px;border-radius:6px}table{border-collapse:collapse}"
+            "td,th{border:1px solid #d0d7de;padding:3px 9px;font-size:.85rem}</style></head><body>")
+    summary = ("<h1>Sewa Setu assistant: persona evals</h1>"
+               "<p>Scripted citizens and officers sign in through the real OAuth flow, call the real MCP tools, "
+               "then the runner reads the portal&rsquo;s database and upload folder to see what is actually true. "
+               "<b>%d of %d personas passed</b> &middot; %d of %d checks. Personas that need the window open are "
+               "skipped (their last real result is shown) once the scheme closes on 31/10/2026 23:59 IST.</p>") % (
+        passed, len(real), checks_ok, checks_total)
+    if not rows:
+        summary += "<p><b>No runs yet.</b></p>"
+    hist = ""
+    if runs:
+        hist = "<h3>Recent runs</h3><table><tr><th>run</th><th>started</th><th>passed</th></tr>%s</table>" % "".join(
+            "<tr><td>%s</td><td>%s</td><td>%d / %d</td></tr>" % (_e(a), _e(fmt(b)), c, d) for a, b, c, d in runs)
+    fnd = ("<h2>What the evals found, and what I changed</h2><pre>%s</pre>" % _e(findings)) if findings else ""
+    body = "".join(_persona_card(r) for r in sorted(rows, key=lambda r: r[0]))
+    return HTMLResponse(head + summary + hist + fnd + body + "</body></html>")
+
+
+async def eval_json(request):
+    try:
+        rows, _ = _eval_data()
+    except Exception:
+        rows = []
+    return JSONResponse([{"persona": r[0], "status": r[1], "name": r[2]["name"],
+                          "checks": r[4], "run_id": r[7]} for r in sorted(rows, key=lambda r: r[0])],
+                        )
+
+
 citizen_app = citizen.streamable_http_app()
 officer_app = officer.streamable_http_app()
 
@@ -376,6 +480,8 @@ async def lifespan(_):
 app = Starlette(
     routes=[
         Route("/healthz", healthz),
+        Route("/eval-dashboard", eval_dashboard),
+        Route("/eval-dashboard.json", eval_json),
         resource_doc("/citizen/mcp", "citizen", "Sewa Setu citizen assistant"),
         resource_doc("/officer/mcp", "officer", "Sewa Setu block officer assistant"),
         Mount("/citizen", app=Guard(citizen_app, "citizen", "/citizen/mcp")),
