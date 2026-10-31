@@ -11,3 +11,4 @@ What the evals confirmed:
 Limits I know about:
 - The personas are scripted, so they test the tools, not how a model uses the tool descriptions.
 - P07 (applying after the window closes) runs after 31 Oct 23:59 IST.
+- Not tested with an LLM client (no paid access); this is the main gap and the first thing I would add.
